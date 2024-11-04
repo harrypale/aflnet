@@ -147,17 +147,15 @@ else {fprintf(stderr, "[AFLNet-replay] Protocol %s has not been supported yet!\n
   state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
 
   // Logging responses
-  if (verbose) {
-    fprintf(stderr, "\nResponses from server:");
-    for (i = 0; i < state_count; i++) {
-      fprintf(stderr, "%d-", state_sequence[i]);
-    }
-    fprintf(stderr, "\n++++++++++++++++++++++++++++++++\nResponses in detail:\n");
-    for (i = 0; i < response_buf_size; i++) {
-      fprintf(stderr, "%c", response_buf[i]);
-    }
-    fprintf(stderr, "\n--------------------------------");
+  fprintf(stderr, "\nResponses from server:");
+  for (i = 0; i < state_count; i++) {
+    fprintf(stderr, "%d-", state_sequence[i]);
   }
+  fprintf(stderr, "\n++++++++++++++++++++++++++++++++\nResponses in detail:\n");
+  for (i = 0; i < response_buf_size; i++) {
+    fprintf(stderr, "%c", response_buf[i]);
+  }
+  fprintf(stderr, "\n--------------------------------");
 
   // Free memory
   ck_free(state_sequence);
