@@ -118,45 +118,50 @@ else {fprintf(stderr, "[AFLNet-replay] Protocol %s has not been supported yet!\n
 
   //Send requests one by one
   //And save all the server responses
-  while(!feof(fp)) {
-    if (buf) {ck_free(buf); buf = NULL;}
-    if (fread(&size, sizeof(unsigned int), 1, fp) > 0) {
-      packet_count++;
-    	fprintf(stderr,"\nSize of the current packet %d is  %d\n", packet_count, size);
+  while (fread(&size, sizeof(unsigned int), 1, fp) == 1) {
+    packet_count++;
+    fprintf(stderr, "\nSize of the current packet %d is %d\n", packet_count, size);
 
-      buf = (char *)ck_alloc(size);
-      fread(buf, size, 1, fp);
-
-      if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
-      n = net_send(sockfd, timeout, buf,size);
-      if (n != size) break;
-
-      if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
+    buf = (char *)ck_alloc(size);
+    
+    if (fread(buf, size, 1, fp) != 1) {
+      fprintf(stderr, "Error reading packet data from file\n");
+      break;
     }
+
+    if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
+    
+    n = net_send(sockfd, timeout, buf, size);
+    if (n != size) {
+      fprintf(stderr, "Error sending packet %d: sent %d bytes instead of %d\n", packet_count, n, size);
+      break;
+    }
+
+    if (net_recv(sockfd, timeout, poll_timeout, &response_buf, &response_buf_size)) break;
   }
 
   fclose(fp);
   close(sockfd);
 
-  //Extract response codes
+  // Extract response codes
   state_sequence = (*extract_response_codes)(response_buf, response_buf_size, &state_count);
 
-  fprintf(stderr,"\n--------------------------------");
-  fprintf(stderr,"\nResponses from server:");
-
-  for (i = 0; i < state_count; i++) {
-    fprintf(stderr,"%d-",state_sequence[i]);
+  // Logging responses
+  if (verbose) {
+    fprintf(stderr, "\nResponses from server:");
+    for (i = 0; i < state_count; i++) {
+      fprintf(stderr, "%d-", state_sequence[i]);
+    }
+    fprintf(stderr, "\n++++++++++++++++++++++++++++++++\nResponses in detail:\n");
+    for (i = 0; i < response_buf_size; i++) {
+      fprintf(stderr, "%c", response_buf[i]);
+    }
+    fprintf(stderr, "\n--------------------------------");
   }
 
-  fprintf(stderr,"\n++++++++++++++++++++++++++++++++\nResponses in details:\n");
-  for (i=0; i < response_buf_size; i++) {
-    fprintf(stderr,"%c",response_buf[i]);
-  }
-  fprintf(stderr,"\n--------------------------------");
-
-  //Free memory
+  // Free memory
   ck_free(state_sequence);
-  if (buf) ck_free(buf);
+  ck_free(buf);
   ck_free(response_buf);
 
   return 0;

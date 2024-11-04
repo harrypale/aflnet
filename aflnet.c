@@ -827,26 +827,33 @@ region_t* extract_requests_rtsp(unsigned char* buf, unsigned int buf_size, unsig
   unsigned int mem_count = 0;
   unsigned int mem_size = 1024;
   unsigned int region_count = 0;
+  unsigned int region_capacity = 4;  // Start with a small capacity and grow if needed
   region_t *regions = NULL;
   char terminator[4] = {0x0D, 0x0A, 0x0D, 0x0A};
 
-  mem=(char *)ck_alloc(mem_size);
+  mem = (char *)ck_alloc(mem_size);
+  regions = (region_t *)ck_alloc(region_capacity * sizeof(region_t));  // Allocate initial space for regions
 
   unsigned int cur_start = 0;
   unsigned int cur_end = 0;
+  
   while (byte_count < buf_size) {
+    mem[mem_count] = buf[byte_count++];  // Direct assignment instead of memcpy
 
-    memcpy(&mem[mem_count], buf + byte_count++, 1);
-
-    //Check if the last four bytes are 0x0D0A0D0A
+    // Check if the last four bytes match 0x0D0A0D0A
     if ((mem_count > 3) && (memcmp(&mem[mem_count - 3], terminator, 4) == 0)) {
+      if (region_count == region_capacity) {
+        // Increase the regions capacity only when necessary
+        region_capacity *= 2;
+        regions = (region_t *)ck_realloc(regions, region_capacity * sizeof(region_t));
+      }
+      
+      regions[region_count].start_byte = cur_start;
+      regions[region_count].end_byte = cur_end;
+      regions[region_count].state_sequence = NULL;
+      regions[region_count].state_count = 0;
+      
       region_count++;
-      regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
-      regions[region_count - 1].start_byte = cur_start;
-      regions[region_count - 1].end_byte = cur_end;
-      regions[region_count - 1].state_sequence = NULL;
-      regions[region_count - 1].state_count = 0;
-
       mem_count = 0;
       cur_start = cur_end + 1;
       cur_end = cur_start;
@@ -854,35 +861,37 @@ region_t* extract_requests_rtsp(unsigned char* buf, unsigned int buf_size, unsig
       mem_count++;
       cur_end++;
 
-      //Check if the last byte has been reached
-      if (cur_end == buf_size - 1) {
+      if (cur_end == buf_size) {  // Handle the last byte without checking every iteration
+        if (region_count == region_capacity) {
+          region_capacity *= 2;
+          regions = (region_t *)ck_realloc(regions, region_capacity * sizeof(region_t));
+        }
+
+        regions[region_count].start_byte = cur_start;
+        regions[region_count].end_byte = cur_end - 1;
+        regions[region_count].state_sequence = NULL;
+        regions[region_count].state_count = 0;
         region_count++;
-        regions = (region_t *)ck_realloc(regions, region_count * sizeof(region_t));
-        regions[region_count - 1].start_byte = cur_start;
-        regions[region_count - 1].end_byte = cur_end;
-        regions[region_count - 1].state_sequence = NULL;
-        regions[region_count - 1].state_count = 0;
         break;
       }
 
       if (mem_count == mem_size) {
-        //enlarge the mem buffer
-        mem_size = mem_size * 2;
-        mem=(char *)ck_realloc(mem, mem_size);
+        // Enlarge the memory buffer
+        mem_size *= 2;
+        mem = (char *)ck_realloc(mem, mem_size);
       }
     }
   }
-  if (mem) ck_free(mem);
 
-  //in case region_count equals zero, it means that the structure of the buffer is broken
-  //hence we create one region for the whole buffer
+  ck_free(mem);
+
+  // If no region was found, allocate space for the whole buffer as a single region
   if ((region_count == 0) && (buf_size > 0)) {
     regions = (region_t *)ck_realloc(regions, sizeof(region_t));
     regions[0].start_byte = 0;
     regions[0].end_byte = buf_size - 1;
     regions[0].state_sequence = NULL;
     regions[0].state_count = 0;
-
     region_count = 1;
   }
 
@@ -1998,49 +2007,59 @@ unsigned int* extract_response_codes_rtsp(unsigned char* buf, unsigned int buf_s
   unsigned int byte_count = 0;
   unsigned int mem_count = 0;
   unsigned int mem_size = 1024;
+  unsigned int state_capacity = 4;  // Initial capacity for state_sequence
   unsigned int *state_sequence = NULL;
   unsigned int state_count = 0;
   char terminator[2] = {0x0D, 0x0A};
   char rtsp[5] = {0x52, 0x54, 0x53, 0x50, 0x2f};
 
-  mem=(char *)ck_alloc(mem_size);
+  mem = (char *)ck_alloc(mem_size);
 
-  state_count++;
-  state_sequence = (unsigned int *)ck_realloc(state_sequence, state_count * sizeof(unsigned int));
-  state_sequence[state_count - 1] = 0;
+  // Allocate memory for the state sequence only when a valid state is found
+  state_sequence = (unsigned int *)ck_alloc(state_capacity * sizeof(unsigned int));
+  state_sequence[state_count++] = 0;
 
   while (byte_count < buf_size) {
-    memcpy(&mem[mem_count], buf + byte_count++, 1);
+    mem[mem_count] = buf[byte_count++];  // Use direct assignment instead of memcpy
 
-    //Check if the last two bytes are 0x0D0A
+    // Check if the last two bytes match 0x0D0A (line terminator)
     if ((mem_count > 0) && (memcmp(&mem[mem_count - 1], terminator, 2) == 0)) {
       if ((mem_count >= 5) && (memcmp(mem, rtsp, 5) == 0)) {
-        //Extract the response code which is the first 3 bytes
-        char temp[4];
-        memcpy(temp, &mem[9], 4);
-        temp[3] = 0x0;
-        unsigned int message_code = (unsigned int) atoi(temp);
+        // Safely extract the response code (first three bytes after "RTSP/1.x ")
+        if (mem_count >= 12) {
+          char temp[4];
+          memcpy(temp, &mem[9], 3);
+          temp[3] = 0x0;  // Null-terminate the string
+          unsigned int message_code = (unsigned int) atoi(temp);
 
-        if (message_code == 0) break;
+          if (message_code == 0) break;  // Invalid or malformed response
 
-        state_count++;
-        state_sequence = (unsigned int *)ck_realloc(state_sequence, state_count * sizeof(unsigned int));
-        state_sequence[state_count - 1] = message_code;
-        mem_count = 0;
+          if (state_count == state_capacity) {
+            // Expand the state sequence only when necessary
+            state_capacity *= 2;
+            state_sequence = (unsigned int *)ck_realloc(state_sequence, state_capacity * sizeof(unsigned int));
+          }
+
+          state_sequence[state_count++] = message_code;
+        }
+
+        mem_count = 0;  // Reset memory buffer
       } else {
         mem_count = 0;
       }
     } else {
       mem_count++;
       if (mem_count == mem_size) {
-        //enlarge the mem buffer
-        mem_size = mem_size * 2;
-        mem=(char *)ck_realloc(mem, mem_size);
+        // Double the memory buffer size when it fills up
+        mem_size *= 2;
+        mem = (char *)ck_realloc(mem, mem_size);
       }
     }
   }
-  if (mem) ck_free(mem);
+
+  ck_free(mem);
   *state_count_ref = state_count;
+
   return state_sequence;
 }
 
@@ -2463,16 +2482,24 @@ int net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
   struct pollfd pfd[1];
   pfd[0].fd = sockfd;
   pfd[0].events = POLLOUT;
-  int rv = poll(pfd, 1, 1);
 
   setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
+
+  int rv = poll(pfd, 1, 100);  // Increase poll timeout to 100ms
   if (rv > 0) {
     if (pfd[0].revents & POLLOUT) {
+      int retry_count = 0;
       while (byte_count < len) {
-        usleep(10);
         n = send(sockfd, &mem[byte_count], len - byte_count, MSG_NOSIGNAL);
-        if (n == 0) return byte_count;
-        if (n == -1) return -1;
+        if (n == 0) {
+          retry_count++;
+          if (retry_count > 3) return -1;  // Limit retries to avoid infinite loop
+          continue;
+        }
+        if (n == -1) {
+          fprintf(stderr, "Send error: %s\n", strerror(errno));
+          return -1;
+        }
         byte_count += n;
       }
     }
@@ -2481,15 +2508,18 @@ int net_send(int sockfd, struct timeval timeout, char *mem, unsigned int len) {
 }
 
 int net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf, unsigned int *len) {
-  char temp_buf[1000];
+  char temp_buf[4096];  // Increase buffer size
   int n;
   struct pollfd pfd[1];
   pfd[0].fd = sockfd;
   pfd[0].events = POLLIN;
-  int rv = poll(pfd, 1, poll_w);
 
-  setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
-  // data received
+  if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) {
+    fprintf(stderr, "Error setting receive timeout: %s\n", strerror(errno));
+    return 1;
+  }
+
+  int rv = poll(pfd, 1, poll_w);
   if (rv > 0) {
     if (pfd[0].revents & POLLIN) {
       n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
@@ -2497,22 +2527,22 @@ int net_recv(int sockfd, struct timeval timeout, int poll_w, char **response_buf
         return 1;
       }
       while (n > 0) {
-        usleep(10);
         *response_buf = (unsigned char *)ck_realloc(*response_buf, *len + n + 1);
+        if (*response_buf == NULL) return 1;  // Handle memory allocation failure
         memcpy(&(*response_buf)[*len], temp_buf, n);
-        (*response_buf)[(*len) + n] = '\0';
-        *len = *len + n;
+        (*response_buf)[*len + n] = '\0';
+        *len += n;
         n = recv(sockfd, temp_buf, sizeof(temp_buf), 0);
         if ((n < 0) && (errno != EAGAIN)) {
           return 1;
         }
       }
     }
-  } else
-    if (rv < 0) // an error was returned
-      return 1;
+  } else if (rv < 0) {
+    fprintf(stderr, "Poll error: %s\n", strerror(errno));
+    return 1;
+  }
 
-  // rv == 0 poll timeout or all data pending after poll has been received successfully
   return 0;
 }
 
@@ -2596,33 +2626,53 @@ void str_rtrim(char* a_str)
 	}
 }
 
-int parse_net_config(u8* net_config, u8* protocol, u8** ip_address, u32* port)
-{
-  char  buf[80];
+int parse_net_config(u8* net_config, u8* protocol, u8** ip_address, u32* port) {
+  char buf[80];
   char **tokens;
   int tokenCount = 3;
 
-  tokens = (char**)malloc(sizeof(char*) * (tokenCount));
+  tokens = (char **)malloc(sizeof(char *) * tokenCount);
+  if (!tokens) return 1;  // Allocation failure
 
-  if (strlen(net_config) > 80) return 1;
+  // Ensure net_config fits in buf
+  if (strlen(net_config) >= sizeof(buf)) {
+    free(tokens);
+    return 1;
+  }
 
-  strncpy(buf, net_config, strlen(net_config));
-   str_rtrim(buf);
+  strncpy(buf, net_config, sizeof(buf) - 1);
+  buf[sizeof(buf) - 1] = '\0';  // Ensure null termination
 
-  if (!str_split(buf, "/", tokens, tokenCount))
-  {
-      if (!strcmp(tokens[0], "tcp:")) {
-        *protocol = PRO_TCP;
-      } else if (!strcmp(tokens[0], "udp:")) {
-        *protocol = PRO_UDP;
-      } else return 1;
+  str_rtrim(buf);  // Remove trailing spaces
 
-      //TODO: check the format of this IP address
-      *ip_address = strdup(tokens[1]);
+  if (!str_split(buf, "/", tokens, tokenCount)) {
+    if (!strcmp(tokens[0], "tcp:")) {
+      *protocol = PRO_TCP;
+    } else if (!strcmp(tokens[0], "udp:")) {
+      *protocol = PRO_UDP;
+    } else {
+      free(tokens);
+      return 2;  // Invalid protocol
+    }
 
-      *port = atoi(tokens[2]);
-      if (*port == 0) return 1;
-  } else return 1;
+    // TODO: Validate IP address format, using placeholder check here
+    if (inet_addr(tokens[1]) == INADDR_NONE) {
+      free(tokens);
+      return 3;  // Invalid IP format
+    }
+    *ip_address = strdup(tokens[1]);
+
+    *port = atoi(tokens[2]);
+    if (*port == 0) {
+      free(*ip_address);
+      free(tokens);
+      return 4;  // Invalid port number
+    }
+  } else {
+    free(tokens);
+    return 1;
+  }
+
   free(tokens);
   return 0;
 }
